@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sft-nix"
+version = "0.1.0"
+description = "Nix environment plugin for sft — .envrc detection, flake syncing, nix develop wrapping"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "pulcerto" }]
+dependencies = ["sft"]
+
+[project.entry-points."sft.plugins"]
+nix = "sft_nix.hooks"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sft_nix"]
