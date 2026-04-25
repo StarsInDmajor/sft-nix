@@ -1,7 +1,8 @@
 """Plugin hooks for sft-nix.
 
 This module is loaded via the ``sft.plugins`` entry point when sft starts.
-It registers post-transfer hooks for .envrc/flake file syncing.
+It applies env stub overrides and registers the post-transfer hook for
+.envrc/flake file syncing.
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ def _post_transfer_envrc_flake(
 
     if src.is_remote:
         probe = None
-        # Already probed during transfer — re-probe for envrc
         envrc_dir = env_mod.find_envrc_dir_remote(src, ctx, allow_dry_run_execute=True)
     else:
         envrc_dir = env_mod.find_envrc_dir_local(src.path)
@@ -55,7 +55,6 @@ def _post_transfer_envrc_flake(
     def _prepare_and_transfer_stub(stub: str) -> None:
         if src.is_remote:
             assert src.host
-            # Resolve the source flake file on the remote
             if flake_path.startswith("/") or flake_path.startswith("~"):
                 p = os.path.join(flake_path, stub)
                 p = os.path.expanduser(p)
@@ -147,3 +146,17 @@ def _post_transfer_envrc_flake(
                 future.result()
             except Exception as e:
                 Theme.error(f"Error transferring flake file: {e}")
+
+
+def register() -> None:
+    """Apply overrides and register hooks."""
+    from sft_nix._overrides import apply_overrides
+
+    apply_overrides()
+    from sft.plugins import register_post_transfer_hook
+
+    register_post_transfer_hook(_post_transfer_envrc_flake)
+
+
+# Auto-register on import so that discover_plugins() via ep.load() activates us.
+register()
