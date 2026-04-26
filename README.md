@@ -72,7 +72,7 @@ After every `sft src dst` transfer, the plugin checks whether `.envrc` exists in
 ```
 sft-nix/
 ├── src/sft_nix/
-│   ├── __init__.py          # Imports hooks.register()
+│   ├── __init__.py          # Applies overrides on import
 │   ├── hooks.py             # Entry point: registers post-transfer hook
 │   └── _overrides.py        # Real implementations of sft.env stubs
 ├── tests/                   # (pending)
@@ -84,7 +84,7 @@ sft-nix/
 
 ```bash
 # Test with sft core
-PYTHONPATH=~/Workspace/sft/src:~/Workspace/sft-nix/src \
+PYTHONPATH=../sft/src:src \
   python3 -c "
 from sft_nix._overrides import apply_overrides
 apply_overrides()
@@ -93,7 +93,7 @@ print(find_project_root('.'))
 "
 
 # Test envrc detection
-PYTHONPATH=~/Workspace/sft/src:~/Workspace/sft-nix/src \
+PYTHONPATH=../sft/src:src \
   python3 -c "
 from sft_nix._overrides import apply_overrides
 apply_overrides()
