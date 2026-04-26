@@ -1,5 +1,7 @@
 # sft-nix
 
+**English** | [中文](README.zh-CN.md)
+
 Nix environment plugin for [sft](https://github.com/StarsInDmajor/sft). Provides `.envrc`/`flake.nix` detection, flake syncing, and `nix develop` command wrapping for remote execution.
 
 ## What It Does
