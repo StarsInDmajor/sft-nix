@@ -12,11 +12,41 @@ import os
 import shlex
 import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Optional
 
 from sft.config import ParsedTarget
 from sft.context import ExecutionContext
 from sft.ui import Theme
+
+
+def _resolve_effective_dst(
+    src: ParsedTarget, dst: ParsedTarget, ctx: ExecutionContext
+) -> str:
+    """Compute the actual destination path after transfer.
+
+    When ``dst.path`` is an existing directory, the transfer logic
+    (git-bundle / archive) appends the source basename to it.
+    The ``dst`` ParsedTarget is not updated, so we replicate the
+    same logic here.
+    """
+    if dst.is_remote:
+        assert dst.host
+        try:
+            ctx.run_ssh(
+                dst.host,
+                f"test -d {shlex.quote(dst.path)}",
+                allow_dry_run_execute=True,
+            )
+            is_dir = True
+        except RuntimeError:
+            is_dir = False
+        if is_dir:
+            return os.path.join(dst.path, os.path.basename(src.path.rstrip("/")))
+    else:
+        if Path(dst.path).is_dir():
+            return os.path.join(dst.path, os.path.basename(src.path.rstrip("/")))
+    return dst.path
 
 
 def _post_transfer_envrc_flake(
@@ -149,8 +179,16 @@ def _post_transfer_envrc_flake(
 
     # Also copy .envrc itself — it may be absent after git bundle transfer
     # since .envrc is commonly git-ignored.
+    #
+    # When the user runs "sft <dir> host:<parent>" and <parent> is an
+    # existing directory, git-bundle clones into <parent>/<basename>.
+    # The dst ParsedTarget still points at <parent>, so we must compute
+    # the real destination the same way transfer_git_bundle does.
+    _effective_dst = _resolve_effective_dst(src, dst, ctx)
     src_envrc = os.path.join(envrc_dir, ".envrc")
-    dst_envrc_dir = env_mod.compute_envrc_target_dir(src.path, envrc_dir, dst.path)
+    dst_envrc_dir = env_mod.compute_envrc_target_dir(
+        src.path, envrc_dir, _effective_dst
+    )
     dst_envrc = os.path.join(dst_envrc_dir, ".envrc")
     if not src.is_remote:
         if os.path.exists(src_envrc):

@@ -248,6 +248,10 @@ class TestPostTransferEnvrcFlake(unittest.TestCase):
             ]
             self.assertTrue(len(envrc_copies) >= 1,
                             f"Expected .envrc copy call, got: {mock_copy.call_args_list}")
+            # Verify destination path includes project name (dir-append logic)
+            dest_path = envrc_copies[0][0][3]
+            self.assertIn("project", dest_path,
+                          f"Expected 'project' in dest path, got: {dest_path}")
 
     @unittest.mock.patch("sft.transfer.copy_single_file")
     def test_no_envrc_no_copy(self, mock_copy):
