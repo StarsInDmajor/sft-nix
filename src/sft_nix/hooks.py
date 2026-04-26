@@ -147,6 +147,26 @@ def _post_transfer_envrc_flake(
             except Exception as e:
                 Theme.error(f"Error transferring flake file: {e}")
 
+    # Also copy .envrc itself — it may be absent after git bundle transfer
+    # since .envrc is commonly git-ignored.
+    src_envrc = os.path.join(envrc_dir, ".envrc")
+    dst_envrc_dir = env_mod.compute_envrc_target_dir(src.path, envrc_dir, dst.path)
+    dst_envrc = os.path.join(dst_envrc_dir, ".envrc")
+    if not src.is_remote:
+        if os.path.exists(src_envrc):
+            Theme.step(Theme.XFER, "Syncing .envrc", src_envrc)
+            copy_single_file(src, src_envrc, dst, dst_envrc, ctx)
+        else:
+            Theme.warning(f"Source .envrc not found: {src_envrc}")
+    else:
+        assert src.host
+        try:
+            ctx.run_ssh(src.host, f"test -f {shlex.quote(src_envrc)}")
+            Theme.step(Theme.XFER, "Syncing .envrc", src_envrc)
+            copy_single_file(src, src_envrc, dst, dst_envrc, ctx)
+        except RuntimeError:
+            Theme.warning(f"Source .envrc not found: {src_envrc}")
+
 
 def register() -> None:
     """Apply overrides and register hooks."""

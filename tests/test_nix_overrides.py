@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 
@@ -201,6 +202,82 @@ class TestFindProjectRoot(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = find_project_root(str(tmp))
             self.assertIsNone(result)
+
+
+class TestPostTransferEnvrcFlake(unittest.TestCase):
+    """Test _post_transfer_envrc_flake hook copies .envrc alongside flake files."""
+
+    def _apply_overrides(self):
+        from sft_nix._overrides import apply_overrides
+        apply_overrides()
+
+    @unittest.mock.patch("sft.transfer.copy_single_file")
+    def test_envrc_copied_on_local_to_local(self, mock_copy):
+        """When src is local with .envrc, hook should copy .envrc to dst."""
+        self._apply_overrides()
+        from sft_nix.hooks import _post_transfer_envrc_flake
+        from sft.config import ParsedTarget
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Create source project with .envrc and flake
+            src_dir = Path(tmp) / "project"
+            src_dir.mkdir()
+            (src_dir / ".envrc").write_text("use flake /some/flake/path\n")
+
+            flake_dir = Path(tmp) / "flake"
+            flake_dir.mkdir()
+            (flake_dir / "flake.nix").write_text("{}")
+            (flake_dir / "flake.lock").write_text("{}")
+
+            # Create dest
+            dst_dir = Path(tmp) / "dest"
+            dst_dir.mkdir()
+
+            src = ParsedTarget(is_remote=False, path=str(src_dir), host=None, user_override=None)
+            dst = ParsedTarget(is_remote=False, path=str(dst_dir), host=None, user_override=None)
+
+            ctx = unittest.mock.MagicMock()
+            args = unittest.mock.MagicMock()
+
+            _post_transfer_envrc_flake(src, dst, args, ctx)
+
+            # Check that copy_single_file was called for .envrc
+            envrc_copies = [
+                call for call in mock_copy.call_args_list
+                if call[0][1].endswith(".envrc")
+            ]
+            self.assertTrue(len(envrc_copies) >= 1,
+                            f"Expected .envrc copy call, got: {mock_copy.call_args_list}")
+
+    @unittest.mock.patch("sft.transfer.copy_single_file")
+    def test_no_envrc_no_copy(self, mock_copy):
+        """When src has no .envrc, hook should not attempt .envrc copy."""
+        self._apply_overrides()
+        from sft_nix.hooks import _post_transfer_envrc_flake
+        from sft.config import ParsedTarget
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src_dir = Path(tmp) / "project"
+            src_dir.mkdir()
+            # No .envrc created
+
+            dst_dir = Path(tmp) / "dest"
+            dst_dir.mkdir()
+
+            src = ParsedTarget(is_remote=False, path=str(src_dir), host=None, user_override=None)
+            dst = ParsedTarget(is_remote=False, path=str(dst_dir), host=None, user_override=None)
+
+            ctx = unittest.mock.MagicMock()
+            args = unittest.mock.MagicMock()
+
+            _post_transfer_envrc_flake(src, dst, args, ctx)
+
+            # No .envrc copy should happen
+            envrc_copies = [
+                call for call in mock_copy.call_args_list
+                if call[0][1].endswith(".envrc")
+            ]
+            self.assertEqual(len(envrc_copies), 0)
 
 
 if __name__ == "__main__":
