@@ -16,7 +16,7 @@
 ## 安装
 
 ```bash
-pip install sft-nix
+pip install git+https://github.com/StarsInDmajor/sft-nix.git
 ```
 
 NixOS 用户：此插件会与 sft 核心及其他插件一起构建为 `packages.sft`。

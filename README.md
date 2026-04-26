@@ -16,7 +16,7 @@ When installed alongside `sft`, this plugin:
 ## Installation
 
 ```bash
-pip install sft-nix
+pip install git+https://github.com/StarsInDmajor/sft-nix.git
 ```
 
 For NixOS, it's built as part of the `packages.sft` derivation alongside the core and other plugins.
