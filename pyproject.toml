@@ -35,5 +35,8 @@ dev = ["pytest"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/sft_nix"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
