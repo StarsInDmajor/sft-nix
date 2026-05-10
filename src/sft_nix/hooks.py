@@ -49,147 +49,123 @@ def _resolve_effective_dst(
     return dst.path
 
 
-def _post_transfer_envrc_flake(
+def _resolve_flake_path_local(envrc_dir: str, raw_path: str) -> Optional[str]:
+    """Turn a raw ``use flake`` path into an absolute local path."""
+    if raw_path.startswith("/") or raw_path.startswith("~"):
+        return os.path.expanduser(raw_path)
+    return os.path.normpath(os.path.join(envrc_dir, raw_path))
+
+
+def _resolve_flake_path_remote(
+    src: ParsedTarget,
+    envrc_dir: str,
+    raw_path: str,
+    ctx: ExecutionContext,
+) -> Optional[str]:
+    """Turn a raw ``use flake`` path into an absolute remote path."""
+    assert src.host
+    script = textwrap.dedent(
+        """
+        import os, sys
+        envrc_dir = os.path.expanduser(%s)
+        raw_path = %s
+        if raw_path.startswith("/") or raw_path.startswith("~"):
+            print(os.path.realpath(os.path.expanduser(raw_path)))
+            sys.exit(0)
+        print(os.path.realpath(os.path.join(envrc_dir, raw_path)))
+        """
+    ) % (json.dumps(envrc_dir), json.dumps(raw_path))
+    try:
+        return ctx.run_ssh(
+            src.host,
+            f"python3 - <<'PY'\n{script}\nPY",
+            capture=True,
+        )
+    except RuntimeError:
+        return None
+
+
+def _sync_one_envrc(
+    envrc_dir: str,
     src: ParsedTarget,
     dst: ParsedTarget,
-    args: Any,
+    effective_dst: str,
     ctx: ExecutionContext,
 ) -> None:
-    """Post-transfer hook: sync .envrc and flake files if detected."""
+    """Sync flake files and .envrc for a single envrc directory."""
     import sft.env as env_mod
 
+    # --- 1. Parse flake path from .envrc ---
     if src.is_remote:
-        probe = None
-        envrc_dir = env_mod.find_envrc_dir_remote(src, ctx, allow_dry_run_execute=True)
+        flake_path_raw = env_mod.parse_envrc_flake_path_remote(
+            src, envrc_dir, ctx
+        )
     else:
-        envrc_dir = env_mod.find_envrc_dir_local(src.path)
+        flake_path_raw = env_mod.parse_envrc_flake_path_local(envrc_dir)
 
-    if not envrc_dir:
+    if not flake_path_raw:
         return
 
-    Theme.info("Envrc", f"Found in {envrc_dir}")
-
+    # --- 2. Resolve flake path to absolute ---
     if src.is_remote:
-        flake_path = env_mod.parse_envrc_flake_path_remote(src, envrc_dir, ctx)
+        flake_abs = _resolve_flake_path_remote(src, envrc_dir, flake_path_raw, ctx)
     else:
-        flake_path = env_mod.parse_envrc_flake_path_local(envrc_dir)
+        flake_abs = _resolve_flake_path_local(envrc_dir, flake_path_raw)
 
-    if not flake_path:
-        Theme.warning("Could not parse flake path from .envrc")
+    if not flake_abs:
+        Theme.warning(f"Could not resolve flake path: {flake_path_raw}")
         return
 
-    Theme.info("Flake Path", flake_path)
+    Theme.info("Flake Path", flake_path_raw)
 
+    # --- 3. Sync flake.nix + flake.lock ---
     from sft.transfer import copy_single_file
 
-    def _prepare_and_transfer_stub(stub: str) -> None:
+    dst_flake_base = env_mod.compute_envrc_target_dir(
+        src.path, envrc_dir, effective_dst
+    )
+
+    def _transfer_stub(stub: str) -> None:
         if src.is_remote:
             assert src.host
-            if flake_path.startswith("/") or flake_path.startswith("~"):
-                p = os.path.join(flake_path, stub)
-                p = os.path.expanduser(p)
-                check_script = textwrap.dedent(
-                    """
-                    import os, sys
-                    if os.path.isfile(os.path.expanduser(%s)):
-                        print(os.path.realpath(os.path.expanduser(%s)))
-                        sys.exit(0)
-                    sys.exit(1)
-                    """
-                ) % (json.dumps(p), json.dumps(p))
-                try:
-                    src_flake_file = ctx.run_ssh(
-                        src.host,
-                        f"python3 - <<'PY'\n{check_script}\nPY",
-                        capture=True,
-                    )
-                    if not src_flake_file:
-                        Theme.warning(f"Source flake file not found: {flake_path}/{stub}")
-                        return
-                except RuntimeError:
-                    Theme.warning(f"Source flake file not found: {flake_path}/{stub}")
-                    return
-            else:
-                resolve_script = textwrap.dedent(
-                    """
-                    import os, sys
-                    envrc_dir = os.path.expanduser(%s)
-                    flake_path = %s
-                    if not flake_path.startswith("/") and not flake_path.startswith("~"):
-                        flake_path = os.path.join(envrc_dir, flake_path)
-                    p = os.path.join(flake_path, %s)
-                    p = os.path.expanduser(p)
-                    p = os.path.realpath(p)
-                    if os.path.isfile(p):
-                        print(p)
-                        sys.exit(0)
-                    sys.exit(1)
-                    """
-                ) % (
-                    json.dumps(envrc_dir),
-                    json.dumps(flake_path),
-                    json.dumps(stub),
+            remote_file = os.path.join(flake_abs, stub)
+            try:
+                ctx.run_ssh(
+                    src.host,
+                    f"test -f {shlex.quote(remote_file)}",
                 )
-                try:
-                    src_flake_file = ctx.run_ssh(
-                        src.host,
-                        f"python3 - <<'PY'\n{resolve_script}\nPY",
-                        capture=True,
-                    )
-                    if not src_flake_file:
-                        Theme.warning(f"Source flake file not found: {flake_path}/{stub}")
-                        return
-                except RuntimeError:
-                    Theme.warning(f"Source flake file not found: {flake_path}/{stub}")
-                    return
-
-            resolved_flake_base = flake_path
-            if not resolved_flake_base.startswith("/") and not resolved_flake_base.startswith("~"):
-                resolved_flake_base = os.path.join(envrc_dir, resolved_flake_base)
-            dst_flake_base = env_mod.compute_envrc_target_dir(
-                src.path, resolved_flake_base, dst.path
-            )
-            dest_flake_file = os.path.join(dst_flake_base, stub)
-        else:
-            local_flake_base = flake_path
-            if not local_flake_base.startswith("/") and not local_flake_base.startswith("~"):
-                local_flake_base = os.path.join(envrc_dir, local_flake_base)
-            src_flake_file = os.path.expanduser(os.path.join(local_flake_base, stub))
-            if not os.path.exists(src_flake_file):
-                Theme.warning(f"Source flake file not found: {src_flake_file}")
+            except RuntimeError:
+                Theme.warning(f"Source flake file not found: {remote_file}")
                 return
-            dst_flake_base = env_mod.compute_envrc_target_dir(
-                src.path, local_flake_base, dst.path
-            )
-            dest_flake_file = os.path.join(dst_flake_base, stub)
+            src_file = remote_file
+        else:
+            src_file = os.path.join(flake_abs, stub)
+            if not os.path.exists(src_file):
+                Theme.warning(f"Source flake file not found: {src_file}")
+                return
 
-        copy_single_file(src, src_flake_file, dst, dest_flake_file, ctx)
+        dst_file = os.path.join(dst_flake_base, stub)
+        copy_single_file(src, src_file, dst, dst_file, ctx)
 
-    Theme.step(Theme.XFER, "Syncing flake files", "parallel")
+    Theme.step(Theme.XFER, "Syncing flake files", f"{flake_path_raw}")
     with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [
-            executor.submit(_prepare_and_transfer_stub, stub)
+        futures = {
+            executor.submit(_transfer_stub, stub): stub
             for stub in ("flake.nix", "flake.lock")
-        ]
+        }
         for future in as_completed(futures):
             try:
                 future.result()
             except Exception as e:
-                Theme.error(f"Error transferring flake file: {e}")
+                Theme.error(f"Error transferring {futures[future]}: {e}")
 
-    # Also copy .envrc itself — it may be absent after git bundle transfer
-    # since .envrc is commonly git-ignored.
-    #
-    # When the user runs "sft <dir> host:<parent>" and <parent> is an
-    # existing directory, git-bundle clones into <parent>/<basename>.
-    # The dst ParsedTarget still points at <parent>, so we must compute
-    # the real destination the same way transfer_git_bundle does.
-    _effective_dst = _resolve_effective_dst(src, dst, ctx)
-    src_envrc = os.path.join(envrc_dir, ".envrc")
+    # --- 4. Sync .envrc itself ---
     dst_envrc_dir = env_mod.compute_envrc_target_dir(
-        src.path, envrc_dir, _effective_dst
+        src.path, envrc_dir, effective_dst
     )
+    src_envrc = os.path.join(envrc_dir, ".envrc")
     dst_envrc = os.path.join(dst_envrc_dir, ".envrc")
+
     if not src.is_remote:
         if os.path.exists(src_envrc):
             Theme.step(Theme.XFER, "Syncing .envrc", src_envrc)
@@ -204,6 +180,36 @@ def _post_transfer_envrc_flake(
             copy_single_file(src, src_envrc, dst, dst_envrc, ctx)
         except RuntimeError:
             Theme.warning(f"Source .envrc not found: {src_envrc}")
+
+
+def _post_transfer_envrc_flake(
+    src: ParsedTarget,
+    dst: ParsedTarget,
+    args: Any,
+    ctx: ExecutionContext,
+) -> None:
+    """Post-transfer hook: sync .envrc and flake files for all envrc dirs."""
+    import sft.env as env_mod
+
+    # 1. Find all .envrc directories in the source tree
+    if src.is_remote:
+        envrc_dirs = env_mod.find_all_envrc_dirs_remote(
+            src, ctx, allow_dry_run_execute=True
+        )
+    else:
+        envrc_dirs = env_mod.find_all_envrc_dirs_local(src.path)
+
+    if not envrc_dirs:
+        return
+
+    Theme.info("Envrc", f"{len(envrc_dirs)} found")
+
+    # 2. Compute effective destination (accounts for dst being an existing dir)
+    effective_dst = _resolve_effective_dst(src, dst, ctx)
+
+    # 3. Sync each .envrc + its flake files
+    for envrc_dir in envrc_dirs:
+        _sync_one_envrc(envrc_dir, src, dst, effective_dst, ctx)
 
 
 def register() -> None:

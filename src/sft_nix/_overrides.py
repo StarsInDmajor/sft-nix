@@ -15,6 +15,8 @@ def apply_overrides() -> None:
     _env_mod.parse_envrc_flake_full_remote = _parse_envrc_flake_full_remote
     _env_mod.sync_env_payload = _sync_env_payload
     _env_mod.build_remote_execution_command = _build_remote_execution_command
+    _env_mod.find_all_envrc_dirs_local = _find_all_envrc_dirs_local
+    _env_mod.find_all_envrc_dirs_remote = _find_all_envrc_dirs_remote
     _env_mod.find_project_root = _find_project_root
 
 
@@ -31,6 +33,58 @@ from sft.config import HostInfo, ParsedTarget
 from sft.context import ExecutionContext
 from sft.shell import rq as _rq
 from sft.ui import Theme
+
+
+def _find_all_envrc_dirs_local(path: str) -> list:
+    """Walk *path* downward, return all directories containing .envrc."""
+    skip = {".git", ".direnv", ".venv", "__pycache__", ".mypy_cache", "node_modules"}
+    root = Path(path).expanduser().resolve()
+    result = []
+    for dirpath, dirs, _files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in skip]
+        if (Path(dirpath) / ".envrc").is_file():
+            result.append(str(Path(dirpath)))
+    return sorted(result)
+
+
+def _find_all_envrc_dirs_remote(
+    target: ParsedTarget,
+    ctx: ExecutionContext,
+    *,
+    allow_dry_run_execute: bool = False,
+) -> list:
+    """Walk remote target path downward, return all directories with .envrc."""
+    assert target.host
+    path = target.path
+    if not path.startswith("~") and not path.startswith("/"):
+        path = f"~/{path}"
+    script = textwrap.dedent(
+        """
+        import os, sys, json
+        path = os.path.expanduser(%s)
+        path = os.path.abspath(path)
+        skip = {".git", ".direnv", ".venv", "__pycache__", ".mypy_cache", "node_modules"}
+        result = []
+        for dirpath, dirs, _files in os.walk(path):
+            dirs[:] = [d for d in dirs if d not in skip]
+            if os.path.isfile(os.path.join(dirpath, ".envrc")):
+                result.append(dirpath)
+        print(json.dumps(sorted(result)))
+        """
+    ) % json.dumps(path)
+    try:
+        output = ctx.run_ssh(
+            target.host,
+            f"python3 - <<'PY'\n{script}\nPY",
+            capture=True,
+            description=f"Scanning .envrc files in {target.path} on {target.host.name}",
+            allow_dry_run_execute=allow_dry_run_execute,
+        )
+        if output:
+            return json.loads(output)
+    except (RuntimeError, json.JSONDecodeError):
+        pass
+    return []
 
 
 def _find_project_root(path: Optional[str] = None) -> Optional[str]:
